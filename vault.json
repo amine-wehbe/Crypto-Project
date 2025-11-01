@@ -1,0 +1,24 @@
+{
+  "salt": "qfvSgfZyCQUITTtXA6H8OQ==",
+  "wrappedDEK": "37qmbOyq4XIS5bSWEzAP1qMJB7Ec6lszsZouZ7wfVsslFYl9fds6BNxYMoBaT55O+hjJjJzW741LM1Sk",
+  "entries": [
+    {
+      "service": "I8VXCoevI99lBcrR2ZY/VEzyiK4obBIs4tKCDMS9E5qT",
+      "username": "2mUiALwFMQlu1QpSpvQQZxA3ykElpZNXOIdSBud3HTInO7GSlH6RcCTIdaoLVNYjHg==",
+      "password": "bt1xsUsbrleA8d3VvHwG0zof9oNfosCyWy2ywep8wTd9Ceeb4ajyZA==",
+      "created_at": 1762013914
+    },
+    {
+      "service": "qVudgA2cDfSXo3nmg+X7BV363aXb0oUAX0VJFbtYaHkGOQ==",
+      "username": "C8ZgblCkgnXiZf0hwF/oppSf63gZXuvYjZqt5wPRkrE=",
+      "password": "kuTClOykDXCSo2SSeNr00arI/OqIeJCnOABL0y+1xQ==",
+      "created_at": 1762013958
+    },
+    {
+      "service": "5JQvJeOYMcPGStXjrqSdD7So2oo+JskAczV4dHVxfqGRhw==",
+      "username": "3ydJSWgKi2ZaSUy1Q2mak+8O68fD0XAfhbFs3dJTPZlQ",
+      "password": "9kbo2M1Qu9JET/C52N6tztaz+uIpHk/1yF03PnuMmd5O",
+      "created_at": 1762015863
+    }
+  ]
+}
