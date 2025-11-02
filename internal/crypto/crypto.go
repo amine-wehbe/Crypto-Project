@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -109,4 +110,53 @@ func DecryptEntry(dek []byte, data []byte) ([]byte, error) {
 	nonce := data[:ns]
 	ct := data[ns:]
 	return gcm.Open(nil, nonce, ct, nil)
+}
+
+// GenerateSecurePassword creates a cryptographically secure random password.
+// Default length = 16, includes uppercase, lowercase, digits, symbols.
+func GenerateSecurePassword(length int) (string, error) {
+	const (
+		lower   = "abcdefghijklmnopqrstuvwxyz"
+		upper   = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+		digits  = "0123456789"
+		symbols = "!@#$%^&*()-_=+[]{}<>?/|~"
+		all     = lower + upper + digits + symbols
+	)
+
+	if length < 12 {
+		return "", fmt.Errorf("password length must be >= 12")
+	}
+
+	// Ensure at least one from each category
+	categories := []string{lower, upper, digits, symbols}
+	password := make([]byte, length)
+
+	// Fill first 4 chars with guaranteed diversity
+	for i, cat := range categories {
+		idx, err := rand.Int(rand.Reader, big.NewInt(int64(len(cat))))
+		if err != nil {
+			return "", err
+		}
+		password[i] = cat[idx.Int64()]
+	}
+
+	// Fill the rest randomly
+	for i := 4; i < length; i++ {
+		idx, err := rand.Int(rand.Reader, big.NewInt(int64(len(all))))
+		if err != nil {
+			return "", err
+		}
+		password[i] = all[idx.Int64()]
+	}
+
+	// Shuffle to avoid predictable start pattern
+	for i := range password {
+		j, err := rand.Int(rand.Reader, big.NewInt(int64(len(password))))
+		if err != nil {
+			return "", err
+		}
+		password[i], password[j.Int64()] = password[j.Int64()], password[i]
+	}
+
+	return string(password), nil
 }
