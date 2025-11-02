@@ -1,11 +1,10 @@
-/*package main
+package main
 
 import (
 	"Crypto-Project/internal/crypto"
 	"Crypto-Project/internal/vault"
 	"encoding/base64"
 	"fmt"
-	"image/color"
 	"strings"
 	"time"
 	"unicode"
@@ -17,43 +16,44 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
-const vaultFile = "vault.json"
-const clipboardTimeout = 30 * time.Second
-const autoLockTimeout = 1 * time.Minute
+const (
+	vaultFile        = "vault.json"
+	clipboardTimeout = 30 * time.Second
+	autoLockTimeout  = 1 * time.Minute
+)
 
-var currentApp fyne.App
-var vaultTimer *time.Timer
-var currentVaultWindow fyne.Window
-var openVaultWindows []fyne.Window
-var loginMessage string
+var (
+	currentApp         fyne.App
+	vaultTimer         *time.Timer
+	currentVaultWindow fyne.Window
+	openVaultWindows   []fyne.Window
+	loginMessage       string
+	loggingOut         bool = false
+)
 
 func main() {
 	a := app.New()
 	currentApp = a
-	showLoginWindow(a)
+	if vault.Exists(vaultFile) {
+		showLoginWindow(a)
+	} else {
+		showSetupMasterPasswordWindow(a)
+	}
 	a.Run()
 }
-
-// ------------------- UTILS -------------------
 
 func resetLockTimer() {
 	if vaultTimer != nil {
 		vaultTimer.Stop()
 	}
-
 	vaultTimer = time.AfterFunc(autoLockTimeout, func() {
 		fyne.Do(func() {
-			// Close all vault windows
 			for _, w := range openVaultWindows {
 				w.Close()
 			}
 			openVaultWindows = nil
 			currentVaultWindow = nil
-
-			// Set the inactivity message
 			loginMessage = "You were logged out due to inactivity."
-
-			// Show login window safely
 			showLoginWindow(currentApp)
 		})
 	})
@@ -74,9 +74,9 @@ func copyToClipboard(clipboard fyne.Clipboard, text string, status *widget.Label
 		fyne.Do(func() {
 			if clipboard.Content() == text {
 				clipboard.SetContent("")
-				status.SetText("Clipboard cleared successfully.")
+				status.SetText("Clipboard cleared.")
 			} else {
-				status.SetText("Clipboard content changed.")
+				status.SetText("Clipboard changed.")
 			}
 			status.Refresh()
 		})
@@ -92,11 +92,27 @@ func removeWindowFromSlice(win fyne.Window) {
 	}
 }
 
-// ------------------- PASSWORD STRENGTH -------------------
+func initVaultSetup(password string) error {
+	vaultSalt, err := crypto.GenerateRandomBytes(16)
+	if err != nil {
+		return err
+	}
+	vaultDEK, err := crypto.GenerateRandomBytes(32)
+	if err != nil {
+		return err
+	}
+	kek := crypto.DeriveKEK([]byte(password), vaultSalt)
+	wrappedDEK, err := crypto.WrapKey(kek, vaultDEK)
+	if err != nil {
+		return err
+	}
+	return vault.SaveVault(vaultFile, []vault.Entry{}, vaultSalt, wrappedDEK)
+}
 
 func scorePassword(password string) (string, float64) {
 	length := len(password)
 	score := 0.0
+
 	if length >= 12 {
 		score += 1.0
 	} else if length >= 8 {
@@ -139,56 +155,34 @@ func scorePassword(password string) (string, float64) {
 	case normalized >= 0.8 && length >= 12:
 		return "Strong 💪", normalized
 	case normalized >= 0.5:
-		return "Good 👍", normalized
+		return "Decent 👍", normalized
 	default:
-		return "Weak 😞", normalized
+		return "Very Weak 😞", normalized
 	}
 }
-
-// Custom Theme to color ProgressBar dynamically
-type customTheme struct {
-	base  fyne.Theme
-	color color.Color
-}
-
-func (t *customTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) color.Color {
-	if name == theme.ColorNameSuccess {
-		return t.color
-	}
-	return t.base.Color(name, variant)
-}
-func (t *customTheme) Font(style fyne.TextStyle) fyne.Resource    { return t.base.Font(style) }
-func (t *customTheme) Icon(name fyne.ThemeIconName) fyne.Resource { return t.base.Icon(name) }
-func (t *customTheme) Size(name fyne.ThemeSizeName) float32       { return t.base.Size(name) }
-
-// ------------------- LOGIN WINDOW -------------------
 
 func showLoginWindow(a fyne.App) {
+	a.Settings().SetTheme(theme.DefaultTheme())
+
 	w := a.NewWindow("Crypto Vault Login")
 	w.SetFixedSize(true)
 	w.Resize(fyne.NewSize(500, 500))
 
-	// Quit app if login window closed
-	w.SetOnClosed(func() {
-		a.Quit()
-	})
+	w.SetOnClosed(func() { a.Quit() })
 
-	title := widget.NewLabel("Master Password")
+	title := widget.NewLabel("Login to Your Vault")
 	title.TextStyle.Bold = true
 
-	passEntry := widget.NewPasswordEntry()
-	passEntry.SetPlaceHolder("Enter Master Password")
-
-	hint := widget.NewLabel("Your password must be at least 12 characters long and contain uppercase letters, numbers, and symbols")
-	hint.Wrapping = fyne.TextWrapWord
+	passEntry := widget.NewEntry()
+	passEntry.Password = true
+	passEntry.SetPlaceHolder("Enter Your Master Password")
 
 	msg := widget.NewLabel(loginMessage)
 	msg.Wrapping = fyne.TextWrapWord
-	loginMessage = "" // reset
+	loginMessage = ""
 
 	loginBtn := widget.NewButton("Unlock Vault", func() {
 		resetLockTimer()
-
 		passwordStr := strings.TrimSpace(passEntry.Text)
 		password := []byte(passwordStr)
 
@@ -200,10 +194,9 @@ func showLoginWindow(a fyne.App) {
 		if !vault.Exists(vaultFile) {
 			_, score := scorePassword(passwordStr)
 			if score < 0.5 {
-				msg.SetText("Master Password too weak. Choose 'Good' or 'Strong'.")
+				msg.SetText("Password too weak.")
 				return
 			}
-
 			salt, _ := crypto.GenerateRandomBytes(16)
 			kek := crypto.DeriveKEK(password, salt)
 			dek, _ := crypto.GenerateRandomBytes(32)
@@ -223,7 +216,7 @@ func showLoginWindow(a fyne.App) {
 
 		v, err := vault.Load(vaultFile)
 		if err != nil {
-			msg.SetText("Failed loading vault")
+			msg.SetText("Failed loading vault.")
 			return
 		}
 
@@ -231,9 +224,8 @@ func showLoginWindow(a fyne.App) {
 		kek := crypto.DeriveKEK(password, salt)
 		wrappedDEK, _ := base64.StdEncoding.DecodeString(v.WrappedDEK)
 		dek, err := crypto.UnwrapKey(kek, wrappedDEK)
-
 		if err != nil {
-			msg.SetText("Wrong password")
+			msg.SetText("Wrong password.")
 			return
 		}
 
@@ -242,465 +234,106 @@ func showLoginWindow(a fyne.App) {
 		showVaultWindow(a, v, dek)
 	})
 
-	form := container.NewVBox(title, passEntry, hint, loginBtn, msg)
+	form := container.NewVBox(title, passEntry, loginBtn, msg)
 	w.SetContent(container.NewPadded(form))
 	w.Show()
 }
 
-// ------------------- VAULT WINDOW -------------------
-
-func showVaultWindow(a fyne.App, v *vault.Vault, dek []byte) {
-	w := a.NewWindow("Crypto Vault")
-	w.SetFixedSize(true)
-	w.Resize(fyne.NewSize(750, 750))
-	currentVaultWindow = w
-	openVaultWindows = append(openVaultWindows, w)
-
-	w.SetOnClosed(func() {
-		if vaultTimer != nil {
-			vaultTimer.Stop()
-		}
-		currentVaultWindow = nil
-	})
-
-	resetLockTimer()
-
-	var filteredEntries []vault.Entry
-	selectedIndex := -1
-	searchEntry := widget.NewEntry()
-	searchEntry.SetPlaceHolder("Search services...")
-
-	var entriesList *widget.List
-
-	filterEntries := func(query string) {
-		query = strings.ToLower(query)
-		filteredEntries = nil
-		for i := range v.Entries {
-			if strings.Contains(strings.ToLower(decryptEntry(dek, v.Entries[i].Service)), query) || query == "" {
-				filteredEntries = append(filteredEntries, v.Entries[i])
-			}
-		}
-		if entriesList != nil {
-			entriesList.Refresh()
-			selectedIndex = -1
-		}
-	}
-	filterEntries("")
-
-	entriesList = widget.NewList(
-		func() int { return len(filteredEntries) },
-		func() fyne.CanvasObject { return widget.NewLabel("") },
-		func(i int, o fyne.CanvasObject) {
-			o.(*widget.Label).SetText(decryptEntry(dek, filteredEntries[i].Service))
-		},
-	)
-
-	searchEntry.OnChanged = func(s string) { resetLockTimer(); filterEntries(s) }
-
-	status := widget.NewLabel("Vault unlocked.")
-	mainClipboard := w.Clipboard()
-
-	entriesList.OnSelected = func(id widget.ListItemID) { resetLockTimer(); selectedIndex = int(id); status.SetText("") }
-	entriesList.OnUnselected = func(id widget.ListItemID) {
-		resetLockTimer()
-		if selectedIndex == int(id) {
-			selectedIndex = -1
-		}
-	}
-
-	addBtn := widget.NewButton("➕ Add", func() {
-		resetLockTimer()
-		showAddEntryWindow(a, v, dek, entriesList, status, filterEntries)
-		filterEntries(searchEntry.Text)
-	})
-
-	viewBtn := widget.NewButton("🔍 View", func() {
-		resetLockTimer()
-		if selectedIndex < 0 {
-			status.SetText("Select an entry first")
-			return
-		}
-		e := filteredEntries[selectedIndex]
-		user := decryptEntry(dek, e.Username)
-		pass := decryptEntry(dek, e.Password)
-		service := decryptEntry(dek, e.Service)
-
-		win := a.NewWindow("Entry")
-		openVaultWindows = append(openVaultWindows, win)
-		win.SetOnClosed(func() { removeWindowFromSlice(win) })
-		win.SetFixedSize(true)
-		win.Resize(fyne.NewSize(450, 200))
-
-		copyButton := widget.NewButton("📋 Copy Password (Auto-Clear)", func() {
-			resetLockTimer()
-			copyToClipboard(mainClipboard, pass, status)
-		})
-
-		win.SetContent(container.NewVBox(
-			widget.NewLabel("Service: "+service),
-			widget.NewSeparator(),
-			widget.NewLabel("Username: "+user),
-			copyButton,
-			widget.NewButton("Close", func() { win.Close() }),
-		))
-		win.Show()
-	})
-
-	deleteBtn := widget.NewButton("🗑 Delete", func() {
-		resetLockTimer()
-		if selectedIndex < 0 {
-			status.SetText("Select entry")
-			return
-		}
-		entry := filteredEntries[selectedIndex]
-		masterIndex := -1
-		for i, e := range v.Entries {
-			if e.Service == entry.Service && e.Username == entry.Username {
-				masterIndex = i
-				break
-			}
-		}
-		if masterIndex != -1 {
-			v.Entries = append(v.Entries[:masterIndex], v.Entries[masterIndex+1:]...)
-			v.Save(vaultFile)
-			filterEntries(searchEntry.Text)
-			status.SetText("Entry deleted")
-		} else {
-			status.SetText("Error: Entry not found.")
-		}
-	})
-
-	logoutBtn := widget.NewButton("🚪 Logout", func() {
-		if vaultTimer != nil {
-			vaultTimer.Stop()
-		}
-		currentVaultWindow = nil
-		w.Close()
-		loginMessage = ""
-		showLoginWindow(a)
-	})
-
-	topButtons := container.NewHBox(addBtn, viewBtn, deleteBtn, logoutBtn)
-	w.SetContent(container.NewBorder(container.NewVBox(searchEntry, container.NewPadded(topButtons)), status, nil, nil, entriesList))
-	w.Show()
-}
-
-// ------------------- ADD ENTRY WINDOW -------------------
-
-func showAddEntryWindow(a fyne.App, v *vault.Vault, dek []byte, list *widget.List, status *widget.Label, filterEntries func(string)) {
-	resetLockTimer()
-
-	w := a.NewWindow("Add Entry")
-	openVaultWindows = append(openVaultWindows, w)
-	w.SetOnClosed(func() { removeWindowFromSlice(w) })
-	w.SetFixedSize(true)
-	w.Resize(fyne.NewSize(450, 350))
-
-	service := widget.NewEntry()
-	service.SetPlaceHolder("Service (e.g. Gmail)")
-	service.OnChanged = func(s string) { resetLockTimer() }
-	username := widget.NewEntry()
-	username.SetPlaceHolder("Username/email")
-	username.OnChanged = func(s string) { resetLockTimer() }
-	pw := widget.NewPasswordEntry()
-	pw.SetPlaceHolder("Account password")
-	pw.OnChanged = func(s string) { resetLockTimer() }
-
-	strengthLabel := widget.NewLabel("Strength:")
-	strengthLabel.TextStyle.Bold = true
-	indicatorText := widget.NewLabel("")
-	indicatorText.TextStyle.Bold = true
-	indicatorBar := widget.NewProgressBar()
-	indicatorBar.Min = 0.0
-	indicatorBar.Max = 1.0
-
-	updateIndicator := func(pwStr string) {
-		text, score := scorePassword(pwStr)
-		indicatorText.SetText(text)
-		indicatorBar.SetValue(score)
-	}
-	updateIndicator(pw.Text)
-	pw.OnChanged = updateIndicator
-
-	save := widget.NewButton("Save", func() {
-		resetLockTimer()
-		if service.Text == "" || username.Text == "" || pw.Text == "" {
-			status.SetText("Fill all fields")
-			return
-		}
-		if err := v.AddEntry(service.Text, username.Text, pw.Text, dek); err != nil {
-			status.SetText("Error adding entry")
-			return
-		}
-		v.Save(vaultFile)
-		filterEntries("")
-		list.Refresh()
-		status.SetText("Entry added ✅")
-		w.Close()
-	})
-
-	w.SetContent(container.NewVBox(
-		widget.NewLabel("Add New Entry"),
-		container.NewPadded(service),
-		container.NewPadded(username),
-		container.NewPadded(pw),
-		container.NewHBox(strengthLabel, container.NewVBox(indicatorBar, indicatorText)),
-		save,
-	))
-	w.Show()
-}
-*/
-
-package main
-
-import (
-	"Crypto-Project/internal/crypto"
-	"Crypto-Project/internal/vault"
-	"encoding/base64"
-	"fmt"
-	"strings"
-	"time"
-	"unicode"
-
-	"fyne.io/fyne/v2"
-	"fyne.io/fyne/v2/app"
-	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/theme"
-	"fyne.io/fyne/v2/widget"
-)
-
-const vaultFile = "vault.json"
-const clipboardTimeout = 30 * time.Second
-const autoLockTimeout = 1 * time.Minute
-
-var currentApp fyne.App
-var vaultTimer *time.Timer
-var currentVaultWindow fyne.Window
-var openVaultWindows []fyne.Window
-var loginMessage string
-
-func main() {
-	a := app.New()
-	currentApp = a
-	showLoginWindow(a)
-	a.Run()
-}
-
-// ------------------- UTILS -------------------
-
-func resetLockTimer() {
-	if vaultTimer != nil {
-		vaultTimer.Stop()
-	}
-
-	vaultTimer = time.AfterFunc(autoLockTimeout, func() {
-		fyne.Do(func() {
-			// Close all vault windows
-			for _, w := range openVaultWindows {
-				w.Close()
-			}
-			openVaultWindows = nil
-			currentVaultWindow = nil
-
-			// Set the inactivity message
-			loginMessage = "You were logged out due to inactivity."
-
-			// Show login window safely
-			showLoginWindow(currentApp)
-		})
-	})
-}
-
-func decryptEntry(dek []byte, entry string) string {
-	enc, _ := base64.StdEncoding.DecodeString(entry)
-	dec, _ := crypto.DecryptEntry(dek, enc)
-	return string(dec)
-}
-
-func copyToClipboard(clipboard fyne.Clipboard, text string, status *widget.Label) {
-	clipboard.SetContent(text)
-	status.SetText(fmt.Sprintf("Password copied! Clearing in %s.", clipboardTimeout))
-	status.Refresh()
-
-	time.AfterFunc(clipboardTimeout, func() {
-		fyne.Do(func() {
-			if clipboard.Content() == text {
-				clipboard.SetContent("")
-				status.SetText("Clipboard cleared successfully.")
-			} else {
-				status.SetText("Clipboard content changed.")
-			}
-			status.Refresh()
-		})
-	})
-}
-
-func removeWindowFromSlice(win fyne.Window) {
-	for i, w := range openVaultWindows {
-		if w == win {
-			openVaultWindows = append(openVaultWindows[:i], openVaultWindows[i+1:]...)
-			break
-		}
-	}
-}
-
-// ------------------- PASSWORD STRENGTH -------------------
-
-func scorePassword(password string) (string, float64) {
-	length := len(password)
-	score := 0.0
-	if length >= 12 {
-		score += 1.0
-	} else if length >= 8 {
-		score += 0.5
-	}
-
-	hasUpper, hasLower, hasDigit, hasSymbol := false, false, false, false
-	for _, char := range password {
-		switch {
-		case unicode.IsUpper(char):
-			hasUpper = true
-		case unicode.IsLower(char):
-			hasLower = true
-		case unicode.IsDigit(char):
-			hasDigit = true
-		case unicode.IsPunct(char) || unicode.IsSymbol(char):
-			hasSymbol = true
-		}
-	}
-
-	if hasUpper {
-		score += 0.5
-	}
-	if hasLower {
-		score += 0.5
-	}
-	if hasDigit {
-		score += 1.0
-	}
-	if hasSymbol {
-		score += 1.5
-	}
-
-	normalized := score / 4.5
-	if normalized > 1.0 {
-		normalized = 1.0
-	}
-
-	switch {
-	case normalized >= 0.8 && length >= 12:
-		return "Strong 💪", normalized
-	case normalized >= 0.5:
-		return "Good 👍", normalized
-	default:
-		return "Weak 😞", normalized
-	}
-}
-
-// ------------------- LOGIN WINDOW -------------------
-
-func showLoginWindow(a fyne.App) {
-	a.Settings().SetTheme(theme.DefaultTheme())
-    
-	w := a.NewWindow("Crypto Vault Login")
+func showSetupMasterPasswordWindow(a fyne.App) {
+	w := a.NewWindow("Set Your Master Password")
 	w.SetFixedSize(true)
 	w.Resize(fyne.NewSize(500, 500))
 
-	w.SetOnClosed(func() {
-		a.Quit()
-	})
-
-	title := widget.NewLabel("Master Password")
+	title := widget.NewLabel("Create Master Password")
 	title.TextStyle.Bold = true
 
-	// 🌟 FIX: Use NewEntry and set Password=true 🌟
-	passEntry := widget.NewEntry()
-	passEntry.Password = true
-	passEntry.SetPlaceHolder("Enter Master Password")
+	pw := widget.NewEntry()
+	pw.Password = true
+	pw.SetPlaceHolder("Enter Your Master Password")
 
-	hint := widget.NewLabel("Your password must be at least 12 characters long and contain uppercase letters, numbers, and symbols")
-	hint.Wrapping = fyne.TextWrapWord
+	confirm := widget.NewEntry()
+	confirm.Password = true
+	confirm.SetPlaceHolder("Confirm Master Password")
 
-	msg := widget.NewLabel(loginMessage)
-	msg.Wrapping = fyne.TextWrapWord
-	loginMessage = "" // reset
+	msg := widget.NewLabel("")
+	reqLabel := widget.NewLabel("Password requirements:\n• At least 8 characters\n• Uppercase and lowercase\n• Numbers\n• Symbols")
+	reqLabel.Wrapping = fyne.TextWrapWord
+	reqLabel.Alignment = fyne.TextAlignCenter
 
-	loginBtn := widget.NewButton("Unlock Vault", func() {
-		resetLockTimer()
+	strengthLabel := widget.NewLabel("Strength:")
+	indicatorText := widget.NewLabel("")
+	indicatorBar := widget.NewProgressBar()
 
-		passwordStr := strings.TrimSpace(passEntry.Text)
-		password := []byte(passwordStr)
+	updateStrength := func(p string) {
+		text, score := scorePassword(p)
+		indicatorText.SetText(text)
+		indicatorBar.SetValue(score)
+	}
+	pw.OnChanged = func(s string) { updateStrength(s) }
 
-		if len(password) == 0 {
-			msg.SetText("Password required")
+	saveBtn := widget.NewButton("Set Password", func() {
+		password := strings.TrimSpace(pw.Text)
+		if password == "" || confirm.Text == "" {
+			msg.SetText("Fill all fields.")
+			return
+		}
+		if password != confirm.Text {
+			msg.SetText("Passwords do not match.")
 			return
 		}
 
-		if !vault.Exists(vaultFile) {
-			_, score := scorePassword(passwordStr)
-			if score < 0.5 {
-				msg.SetText("Master Password too weak. Choose 'Good' or 'Strong'.")
-				return
-			}
-			
-			salt, _ := crypto.GenerateRandomBytes(16)
-			kek := crypto.DeriveKEK(password, salt)
-			dek, _ := crypto.GenerateRandomBytes(32)
-			wrapped, _ := crypto.WrapKey(kek, dek)
-
-			v := &vault.Vault{
-				Salt:  base64.StdEncoding.EncodeToString(salt),
-				WrappedDEK: base64.StdEncoding.EncodeToString(wrapped),
-				Entries: []vault.Entry{},
-			}
-			v.Save(vaultFile)
-
-			w.Hide()
-			showVaultWindow(a, v, dek)
+		_, score := scorePassword(password)
+		if score < 0.8 {
+			msg.SetText("Password too weak.")
 			return
 		}
 
-		v, err := vault.Load(vaultFile)
-		if err != nil {
-			msg.SetText("Failed loading vault")
-			return
+		salt, _ := crypto.GenerateRandomBytes(16)
+		kek := crypto.DeriveKEK([]byte(password), salt)
+		dek, _ := crypto.GenerateRandomBytes(32)
+		wrapped, _ := crypto.WrapKey(kek, dek)
+
+		v := &vault.Vault{
+			Salt:       base64.StdEncoding.EncodeToString(salt),
+			WrappedDEK: base64.StdEncoding.EncodeToString(wrapped),
+			Entries:    []vault.Entry{},
 		}
+		v.Save(vaultFile)
 
-		salt, _ := base64.StdEncoding.DecodeString(v.Salt)
-		kek := crypto.DeriveKEK(password, salt)
-		wrappedDEK, _ := base64.StdEncoding.DecodeString(v.WrappedDEK)
-		dek, err := crypto.UnwrapKey(kek, wrappedDEK)
-
-		if err != nil {
-			msg.SetText("Wrong password")
-			return
-		}
-
-		msg.SetText("Vault unlocked ✅")
-		w.Hide()
-		showVaultWindow(a, v, dek)
+		w.Close()
+		showLoginWindow(a)
 	})
 
-	form := container.NewVBox(title, passEntry, hint, loginBtn, msg)
-	w.SetContent(container.NewPadded(form))
+	w.SetContent(container.NewVBox(
+		title, pw, confirm, reqLabel,
+		container.NewHBox(strengthLabel, container.NewVBox(indicatorBar, indicatorText)),
+		saveBtn, msg,
+	))
 	w.Show()
 }
-
-// ------------------- VAULT WINDOW -------------------
 
 func showVaultWindow(a fyne.App, v *vault.Vault, dek []byte) {
 	w := a.NewWindow("Crypto Vault")
 	w.SetFixedSize(true)
 	w.Resize(fyne.NewSize(750, 750))
+
 	currentVaultWindow = w
 	openVaultWindows = append(openVaultWindows, w)
 
+	// Close all windows if main vault window is closed
 	w.SetOnClosed(func() {
 		if vaultTimer != nil {
 			vaultTimer.Stop()
 		}
 		currentVaultWindow = nil
-		removeWindowFromSlice(w) 
+		// Close all open view/edit windows
+		for _, win := range openVaultWindows {
+			if win != w {
+				win.Close()
+			}
+		}
+		openVaultWindows = nil
+		//currentApp.Quit()
 	})
 
 	resetLockTimer()
@@ -708,7 +341,7 @@ func showVaultWindow(a fyne.App, v *vault.Vault, dek []byte) {
 	var filteredEntries []vault.Entry
 	selectedIndex := -1
 	searchEntry := widget.NewEntry()
-	searchEntry.SetPlaceHolder("Search services...")
+	searchEntry.SetPlaceHolder("Search...")
 
 	var entriesList *widget.List
 
@@ -716,7 +349,8 @@ func showVaultWindow(a fyne.App, v *vault.Vault, dek []byte) {
 		query = strings.ToLower(query)
 		filteredEntries = nil
 		for i := range v.Entries {
-			if strings.Contains(strings.ToLower(decryptEntry(dek, v.Entries[i].Service)), query) || query == "" {
+			serviceStr := strings.ToLower(decryptEntry(dek, v.Entries[i].Service))
+			if query == "" || strings.Contains(serviceStr, query) {
 				filteredEntries = append(filteredEntries, v.Entries[i])
 			}
 		}
@@ -738,9 +372,13 @@ func showVaultWindow(a fyne.App, v *vault.Vault, dek []byte) {
 	searchEntry.OnChanged = func(s string) { resetLockTimer(); filterEntries(s) }
 
 	status := widget.NewLabel("Vault unlocked.")
-	mainClipboard := w.Clipboard()
 
-	entriesList.OnSelected = func(id widget.ListItemID) { resetLockTimer(); selectedIndex = int(id); status.SetText("") }
+	entriesList.OnSelected = func(id widget.ListItemID) {
+		resetLockTimer()
+		selectedIndex = int(id)
+		status.SetText("")
+	}
+
 	entriesList.OnUnselected = func(id widget.ListItemID) {
 		resetLockTimer()
 		if selectedIndex == int(id) {
@@ -748,87 +386,110 @@ func showVaultWindow(a fyne.App, v *vault.Vault, dek []byte) {
 		}
 	}
 
-	addBtn := widget.NewButton("➕ Add", func() {
-		resetLockTimer()
-		showAddEntryWindow(a, v, dek, entriesList, status, filterEntries)
-		filterEntries(searchEntry.Text)
-	})
-
+	// ---------------- VIEW BUTTON ----------------
 	viewBtn := widget.NewButton("🔍 View", func() {
 		resetLockTimer()
 		if selectedIndex < 0 {
 			status.SetText("Select an entry first")
 			return
 		}
+
 		e := filteredEntries[selectedIndex]
 		user := decryptEntry(dek, e.Username)
 		pass := decryptEntry(dek, e.Password)
 		service := decryptEntry(dek, e.Service)
+		notes := decryptEntry(dek, e.Notes)
 
 		win := a.NewWindow("Entry Details: " + service)
 		openVaultWindows = append(openVaultWindows, win)
 		win.SetOnClosed(func() { removeWindowFromSlice(win) })
 		win.SetFixedSize(true)
-		win.Resize(fyne.NewSize(500, 200)) 
+		win.Resize(fyne.NewSize(500, 350))
 
-		// 🌟 FIX: Use widget.Entry and toggle its Password flag 🌟
-		
-		// 1. Initial masked password field (read-only)
+		// ---------------- PASSWORD ROW ----------------
 		passwordEntry := widget.NewEntry()
 		passwordEntry.SetText(pass)
-		passwordEntry.Password = true // ⬅️ Set the mask
-		passwordEntry.Disable() 
+		passwordEntry.Password = true
+		passwordEntry.Disable() // read-only
 
-		// Container to hold the swappable field
-		// In v1.x, we can directly manipulate the Password field of a single Entry
-		
-		// The eye button (declared before the toggle logic)
-		var toggleButton *widget.Button
-		
-		// 2. Define the toggle logic (manipulates the single passwordEntry)
-		toggleFunc := func() {
+		var toggleButton *widget.Button // declare first
+		toggleButton = widget.NewButtonWithIcon("", theme.VisibilityIcon(), func() {
 			resetLockTimer()
-			
-			// Toggle the Password field
 			passwordEntry.Password = !passwordEntry.Password
-			
 			if passwordEntry.Password {
 				toggleButton.SetIcon(theme.VisibilityIcon())
 			} else {
 				toggleButton.SetIcon(theme.VisibilityOffIcon())
 			}
-			passwordEntry.Refresh() // Crucial to redraw the widget
-		}
-		
-		// 3. Create the button, which calls the toggle function
-		toggleButton = widget.NewButtonWithIcon("", theme.VisibilityIcon(), toggleFunc)
-		toggleButton.Importance = widget.LowImportance
-		
-		// Layout container for the password entry and the eye button
+			passwordEntry.Refresh()
+		})
+
 		passwordRow := container.NewBorder(
-			nil,
-			nil,
-			widget.NewLabel("Password: "), // Label on the left
-			toggleButton, // Button on the right
-			passwordEntry, // The single Entry is placed here
+			nil, nil,
+			widget.NewLabel("Password:"),
+			toggleButton,
+			passwordEntry,
 		)
-		
+
+		// ---------------- NOTES ----------------
+		notesBox := widget.NewMultiLineEntry()
+		notesBox.SetText(notes)
+		notesBox.Disable() // keep dim
+
+		// ---------------- COPY BUTTON ----------------
 		copyButton := widget.NewButton("📋 Copy Password (Auto-Clear)", func() {
 			resetLockTimer()
-			copyToClipboard(mainClipboard, pass, status)
+			copyToClipboard(win.Clipboard(), pass, status)
 		})
-		
+
+		// ---------------- EDIT BUTTON ----------------
+		editButton := widget.NewButtonWithIcon(" Edit", theme.DocumentCreateIcon(), func() {
+			resetLockTimer()
+			win.Close() // close view window
+
+			// find actual index in v.Entries
+			masterIndex := -1
+			for i, entry := range v.Entries {
+				if entry.Service == filteredEntries[selectedIndex].Service &&
+					entry.Username == filteredEntries[selectedIndex].Username {
+					masterIndex = i
+					break
+				}
+			}
+			if masterIndex == -1 {
+				status.SetText("Failed to locate entry")
+				return
+			}
+
+			// open edit window
+			showEditEntryWindow(a, v, dek, masterIndex, func() {
+				filterEntries(searchEntry.Text) // rebuild filteredEntries
+				entriesList.Refresh()           // refresh UI
+			}, status)
+
+		})
+
 		closeButton := widget.NewButton("Close", func() { win.Close() })
 
 		win.SetContent(container.NewVBox(
 			widget.NewLabel("Service: "+service),
 			widget.NewLabel("Username: "+user),
 			widget.NewSeparator(),
-			passwordRow, // The secure password field with toggle
+			passwordRow,
+			container.NewHBox(editButton),
+			widget.NewLabel("Notes:"),
+			notesBox,
 			copyButton,
 			closeButton,
 		))
 		win.Show()
+	})
+
+	// ---------------- TOP BUTTONS ----------------
+	addBtn := widget.NewButton("➕ Add", func() {
+		resetLockTimer()
+		showAddEntryWindow(a, v, dek, entriesList, status, filterEntries)
+		filterEntries(searchEntry.Text)
 	})
 
 	deleteBtn := widget.NewButton("🗑 Delete", func() {
@@ -851,7 +512,7 @@ func showVaultWindow(a fyne.App, v *vault.Vault, dek []byte) {
 			filterEntries(searchEntry.Text)
 			status.SetText("Entry deleted")
 		} else {
-			status.SetText("Error: Entry not found.")
+			status.SetText("Entry not found.")
 		}
 	})
 
@@ -860,26 +521,26 @@ func showVaultWindow(a fyne.App, v *vault.Vault, dek []byte) {
 			vaultTimer.Stop()
 		}
 		currentVaultWindow = nil
-		fyne.Do(func() { 
-			for _, w := range openVaultWindows {
-				w.Close()
-			}
-			openVaultWindows = nil
+
+		// Close all open vault windows (add/edit/view)
+		for _, w := range openVaultWindows {
 			w.Close()
-			loginMessage = ""
-			showLoginWindow(a)
-		})
+		}
+		openVaultWindows = nil
+
+		// Show login window instead of quitting
+		loginMessage = "You logged out."
+		showLoginWindow(a)
 	})
 
 	topButtons := container.NewHBox(addBtn, viewBtn, deleteBtn, logoutBtn)
-	content := container.NewBorder(container.NewVBox(searchEntry, container.NewPadded(topButtons)), status, nil, nil, entriesList)
+	content := container.NewBorder(
+		container.NewVBox(searchEntry, container.NewPadded(topButtons)),
+		status, nil, nil, entriesList,
+	)
 	w.SetContent(content)
 	w.Show()
 }
-
-
-
-// ------------------- ADD ENTRY WINDOW -------------------
 
 func showAddEntryWindow(a fyne.App, v *vault.Vault, dek []byte, list *widget.List, status *widget.Label, filterEntries func(string)) {
 	resetLockTimer()
@@ -888,7 +549,7 @@ func showAddEntryWindow(a fyne.App, v *vault.Vault, dek []byte, list *widget.Lis
 	openVaultWindows = append(openVaultWindows, w)
 	w.SetOnClosed(func() { removeWindowFromSlice(w) })
 	w.SetFixedSize(true)
-	w.Resize(fyne.NewSize(450, 400)) 
+	w.Resize(fyne.NewSize(450, 500))
 
 	service := widget.NewEntry()
 	service.SetPlaceHolder("Service (e.g. Gmail)")
@@ -898,36 +559,28 @@ func showAddEntryWindow(a fyne.App, v *vault.Vault, dek []byte, list *widget.Lis
 	username.SetPlaceHolder("Username/email")
 	username.OnChanged = func(s string) { resetLockTimer() }
 
-	// Use NewEntry and set Password=true
 	pw := widget.NewEntry()
 	pw.Password = true
 	pw.SetPlaceHolder("Account password")
-	
-	// Prepare for the Password Generator Button
+
 	generatorBtn := widget.NewButton("Generate", func() {
 		resetLockTimer()
-		// TODO: Implement password generation logic
+		pass, err := crypto.GenerateSecurePassword(16)
+		if err != nil {
+			status.SetText("Failed to generate")
+			return
+		}
+		pw.SetText(pass)
 	})
 	generatorBtn.Importance = widget.LowImportance
 
-	
-	passwordInputRow := container.NewBorder(
-		nil, 
-		nil, 
-		nil, 
-		generatorBtn, 
-		pw, // The password entry
-	)
+	passwordInputRow := container.NewBorder(nil, nil, nil, generatorBtn, pw)
 
-
-	// Password strength indicators for new entry (kept)
 	strengthLabel := widget.NewLabel("Strength:")
 	strengthLabel.TextStyle.Bold = true
 	indicatorText := widget.NewLabel("")
 	indicatorText.TextStyle.Bold = true
 	indicatorBar := widget.NewProgressBar()
-	indicatorBar.Min = 0.0
-	indicatorBar.Max = 1.0
 
 	updateIndicator := func(pwStr string) {
 		text, score := scorePassword(pwStr)
@@ -935,11 +588,15 @@ func showAddEntryWindow(a fyne.App, v *vault.Vault, dek []byte, list *widget.Lis
 		indicatorBar.SetValue(score)
 	}
 	updateIndicator(pw.Text)
-	
-	pw.OnChanged = func(s string) { 
-		resetLockTimer() 
+	pw.OnChanged = func(s string) {
+		resetLockTimer()
 		updateIndicator(s)
 	}
+
+	notes := widget.NewMultiLineEntry()
+	notes.SetPlaceHolder("Notes (optional)")
+	notes.Wrapping = fyne.TextWrapWord
+	notes.OnChanged = func(s string) { resetLockTimer() }
 
 	save := widget.NewButton("Save", func() {
 		resetLockTimer()
@@ -948,11 +605,11 @@ func showAddEntryWindow(a fyne.App, v *vault.Vault, dek []byte, list *widget.Lis
 			return
 		}
 
-		if err := v.AddEntry(service.Text, username.Text, pw.Text, dek); err != nil { 
+		if err := v.AddEntry(service.Text, username.Text, pw.Text, notes.Text, dek); err != nil {
 			status.SetText("Error adding entry")
 			return
 		}
-		
+
 		v.Save(vaultFile)
 		filterEntries("")
 		list.Refresh()
@@ -960,17 +617,122 @@ func showAddEntryWindow(a fyne.App, v *vault.Vault, dek []byte, list *widget.Lis
 		w.Close()
 	})
 
-	// Wrap the core content in NewVBox
 	content := container.NewVBox(
 		widget.NewLabel("Add New Entry"),
-		service,
-		username,
-		passwordInputRow, 
+		container.NewPadded(service),
+		container.NewPadded(username),
+		passwordInputRow,
 		container.NewHBox(strengthLabel, container.NewVBox(indicatorBar, indicatorText)),
+		widget.NewLabel("Notes:"),
+		notes,
 		save,
 	)
 
-	// Wrap the VBox content in NewPadded to provide overall window margin
+	w.SetContent(container.NewPadded(content))
+	w.Show()
+}
+
+func showEditEntryWindow(a fyne.App, v *vault.Vault, dek []byte, index int, refreshList func(), status *widget.Label) {
+	resetLockTimer()
+
+	entry := v.Entries[index]
+
+	w := a.NewWindow("Edit Entry")
+	openVaultWindows = append(openVaultWindows, w)
+	w.SetOnClosed(func() { removeWindowFromSlice(w) })
+	w.SetFixedSize(true)
+	w.Resize(fyne.NewSize(450, 550))
+
+	// Ensure all windows close if app quits
+	w.SetCloseIntercept(func() { removeWindowFromSlice(w); w.Close() })
+
+	// Service
+	service := widget.NewEntry()
+	service.SetText(decryptEntry(dek, entry.Service))
+	service.SetPlaceHolder("Service (e.g., Gmail)")
+	service.OnChanged = func(s string) { resetLockTimer() }
+
+	// Username
+	username := widget.NewEntry()
+	username.SetText(decryptEntry(dek, entry.Username))
+	username.SetPlaceHolder("Username/email")
+	username.OnChanged = func(s string) { resetLockTimer() }
+
+	// Password with eye toggle and generate button
+	pw := widget.NewEntry()
+	pw.SetText(decryptEntry(dek, entry.Password))
+	pw.Password = true
+	pw.OnChanged = func(s string) { resetLockTimer() }
+
+	var toggleButton *widget.Button
+	toggleFunc := func() {
+		resetLockTimer()
+		pw.Password = !pw.Password
+		if pw.Password {
+			toggleButton.SetIcon(theme.VisibilityIcon())
+		} else {
+			toggleButton.SetIcon(theme.VisibilityOffIcon())
+		}
+		pw.Refresh()
+	}
+	toggleButton = widget.NewButtonWithIcon("", theme.VisibilityIcon(), toggleFunc)
+
+	generateBtn := widget.NewButton("Generate", func() {
+		resetLockTimer()
+		pass, err := crypto.GenerateSecurePassword(16)
+		if err != nil {
+			status.SetText("Failed to generate password")
+			return
+		}
+		pw.SetText(pass)
+	})
+	generateBtn.Importance = widget.LowImportance
+
+	passwordRow := container.NewBorder(nil, nil, toggleButton, generateBtn, pw)
+
+	// Notes (editable in edit window)
+	notesBox := widget.NewMultiLineEntry()
+	notesBox.SetText(decryptEntry(dek, entry.Notes))
+	notesBox.Wrapping = fyne.TextWrapWord
+	notesBox.OnChanged = func(s string) { resetLockTimer() }
+
+	// Save button
+	saveBtn := widget.NewButton("Save Changes", func() {
+		resetLockTimer()
+		if service.Text == "" || username.Text == "" || pw.Text == "" {
+			status.SetText("Fill all fields")
+			return
+		}
+
+		// encrypt updated fields
+		newService, _ := crypto.EncryptEntry(dek, []byte(service.Text))
+		newUsername, _ := crypto.EncryptEntry(dek, []byte(username.Text))
+		newPassword, _ := crypto.EncryptEntry(dek, []byte(pw.Text))
+		newNotes, _ := crypto.EncryptEntry(dek, []byte(notesBox.Text))
+
+		v.Entries[index].Service = base64.StdEncoding.EncodeToString(newService)
+		v.Entries[index].Username = base64.StdEncoding.EncodeToString(newUsername)
+		v.Entries[index].Password = base64.StdEncoding.EncodeToString(newPassword)
+		v.Entries[index].Notes = base64.StdEncoding.EncodeToString(newNotes)
+
+		v.Save(vaultFile)
+		refreshList()
+		status.SetText("Entry updated ✅")
+		w.Close()
+	})
+
+	content := container.NewVBox(
+		widget.NewLabel("Service:"),
+		service,
+		widget.NewLabel("Username:"),
+		username,
+		widget.NewLabel("Password:"),
+		passwordRow,
+		widget.NewLabel("Notes:"),
+		notesBox,
+		saveBtn,
+	)
+
 	w.SetContent(container.NewPadded(content))
 	w.Show()
 }
