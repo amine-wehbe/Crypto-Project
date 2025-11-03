@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"image/color"
 	"strings"
+	"sort"
 	"time"
 	"unicode"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
@@ -34,33 +36,59 @@ var (
 	loggingOut         bool = false
 )
 
-// ------------------- CUSTOM WIDGET FOR FASTER TOGGLE -------------------
+// ------------------- CUSTOM WIDGET FOR FASTER TOGGLE (REVISED) -------------------
 
-// TappableLabel is a custom widget that combines a Label with tappable behavior.
-type TappableLabel struct {
-	widget.Label
-	OnTapped func() // Function to execute when the label is tapped
+// TappableText is a custom widget using canvas.Text for size control and tap behavior.
+type TappableText struct {
+	widget.BaseWidget
+	text     *canvas.Text
+	OnTapped func() // Function to execute when the text is tapped
 }
 
-// Extend the base widget to create a new custom TappableLabel
-func NewTappableLabel(text string, tapped func()) *TappableLabel {
-	l := &TappableLabel{
+// Extend the base widget to create a new custom TappableText
+func NewTappableText(text string, tapped func(), size float32) *TappableText {
+	t := &TappableText{
+		text: canvas.NewText(text, theme.ForegroundColor()),
 		OnTapped: tapped,
 	}
-	l.ExtendBaseWidget(l) // Boilerplate for custom Fyne widgets
-	l.SetText(text)
-	return l
+	t.text.TextSize = size // Set the size here!
+	t.text.Alignment = fyne.TextAlignLeading
+	t.ExtendBaseWidget(t)
+	return t
+}
+
+func (t *TappableText) CreateRenderer() fyne.WidgetRenderer {
+	return widget.NewSimpleRenderer(t.text)
+}
+
+func (t *TappableText) MinSize() fyne.Size {
+	return t.text.MinSize()
+}
+
+func (t *TappableText) SetText(text string) {
+	t.text.Text = text
+	t.text.Refresh()
+	t.Refresh()
+}
+
+func (t *TappableText) SetBold(b bool) {
+	if b {
+		t.text.TextStyle.Bold = true
+	} else {
+		t.text.TextStyle.Bold = false
+	}
+	t.text.Refresh()
 }
 
 // Tapped implements the fyne.Tappable interface
-func (t *TappableLabel) Tapped(*fyne.PointEvent) {
+func (t *TappableText) Tapped(*fyne.PointEvent) {
 	if t.OnTapped != nil {
 		t.OnTapped()
 	}
 }
 
 // TappedSecondary implements the fyne.Tappable interface
-func (t *TappableLabel) TappedSecondary(*fyne.PointEvent) {}
+func (t *TappableText) TappedSecondary(*fyne.PointEvent) {}
 
 // ------------------- CUSTOM THEME FIX (FYNE ERROR) -------------------
 
@@ -86,7 +114,7 @@ func (m *MyTheme) Icon(name fyne.ThemeIconName) fyne.Resource {
 }
 
 func (m *MyTheme) Size(name fyne.ThemeSizeName) float32 {
-	return theme.DefaultTheme().Size(name)
+	return theme.DefaultTheme().Size(name) // ⭐️ REVERTED: Using the system default size for all general elements.
 }
 
 func NewMyTheme() fyne.Theme {
@@ -100,13 +128,63 @@ func main() {
 	currentApp = a
 	a.Settings().SetTheme(NewMyTheme()) 
 
-	if vault.Exists(vaultFile) {
-		showLoginWindow(a)
-	} else {
-		showSetupMasterPasswordWindow(a)
-	}
+	// Start with the intro window
+	showIntroWindow(a)
 	a.Run()
 }
+
+// ------------------- INTRO WINDOW -------------------
+
+func showIntroWindow(a fyne.App) {
+	w := a.NewWindow("Loading...")
+	w.SetFixedSize(true)
+	w.Resize(fyne.NewSize(400, 300))
+	w.CenterOnScreen() // <-- Centers the window
+	w.SetPadded(false) // No padding for a centered feel
+	
+	welcome := widget.NewLabel("Welcome to Password Manager")
+	welcome.TextStyle.Bold = true
+	welcome.TextStyle.TabWidth = 50 // Ensures it appears centered better
+	welcome.Alignment = fyne.TextAlignCenter
+	
+	// Percentage progress bar
+	progress := widget.NewProgressBar()
+	progress.SetValue(0.0)
+	
+	content := container.NewCenter(container.NewVBox(
+		welcome,
+		widget.NewSeparator(),
+		widget.NewLabel("Simulating Vault Check..."),
+		progress,
+	))
+	
+	w.SetContent(content)
+	w.Show()
+	
+	// Simulate the loading time and update the progress bar
+	go func() {
+		// Simulating a 1.5 second loading period
+		totalSteps := 15
+		for i := 1; i <= totalSteps; i++ {
+			time.Sleep(100 * time.Millisecond) // 100ms per step
+			fyne.Do(func() {
+				value := float64(i) / float64(totalSteps)
+				progress.SetValue(value)
+			})
+		}
+		
+		// When loading is complete, close the intro window and show the next
+		fyne.Do(func() {
+			w.Close()
+			if vault.Exists(vaultFile) {
+				showLoginWindow(a)
+			} else {
+				showSetupMasterPasswordWindow(a)
+			}
+		})
+	}()
+}
+
 
 // ------------------- UTILS -------------------
 
@@ -235,6 +313,7 @@ func showLoginWindow(a fyne.App) {
 	w := a.NewWindow("Crypto Vault Login")
 	w.SetFixedSize(true)
 	w.Resize(fyne.NewSize(500, 500))
+	w.CenterOnScreen() // <-- Centers the window
 
 	w.SetOnClosed(func() { a.Quit() })
 
@@ -311,6 +390,7 @@ func showSetupMasterPasswordWindow(a fyne.App) {
 	w := a.NewWindow("Set Your Master Password")
 	w.SetFixedSize(true)
 	w.Resize(fyne.NewSize(500, 500))
+	w.CenterOnScreen() // <-- Centers the window
 
 	title := widget.NewLabel("Create Master Password")
 	title.TextStyle.Bold = true
@@ -380,7 +460,7 @@ func showSetupMasterPasswordWindow(a fyne.App) {
 	w.Show()
 }
 
-// ------------------- SETTINGS WINDOW -------------------
+// ------------------- UTILS: SETTINGS WINDOW -------------------
 
 func showSettingsWindow(a fyne.App, refreshTimer func()) {
 	resetLockTimer()
@@ -389,6 +469,7 @@ func showSettingsWindow(a fyne.App, refreshTimer func()) {
 	w.SetOnClosed(func() { removeWindowFromSlice(w) })
 	w.SetFixedSize(true)
 	w.Resize(fyne.NewSize(500, 400))
+	w.CenterOnScreen() // <-- Centers the window
 
 	// --- 1. Clipboard Timeout Setting ---
 	clipboardOptions := []string{"30 Seconds", "1 Minute", "3 Minutes"}
@@ -487,7 +568,7 @@ func showSettingsWindow(a fyne.App, refreshTimer func()) {
 	w.Show()
 }
 
-// ------------------- ADD ENTRY WINDOW -------------------
+// ------------------- UTILS: ADD ENTRY WINDOW -------------------
 
 func showAddEntryWindow(a fyne.App, v *vault.Vault, dek []byte, list *widget.List, status *widget.Label, filterEntries func(string)) {
 	resetLockTimer()
@@ -497,6 +578,7 @@ func showAddEntryWindow(a fyne.App, v *vault.Vault, dek []byte, list *widget.Lis
 	w.SetOnClosed(func() { removeWindowFromSlice(w) })
 	w.SetFixedSize(true)
 	w.Resize(fyne.NewSize(450, 500))
+	w.CenterOnScreen() // <-- Centers the window
 
 	service := widget.NewEntry()
 	service.SetPlaceHolder("Service (e.g. Gmail)")
@@ -581,7 +663,7 @@ func showAddEntryWindow(a fyne.App, v *vault.Vault, dek []byte, list *widget.Lis
 }
 
 
-// ------------------- EDIT ENTRY WINDOW -------------------
+// ------------------- UTILS: EDIT ENTRY WINDOW -------------------
 
 func showEditEntryWindow(a fyne.App, v *vault.Vault, dek []byte, index int, refreshList func(), status *widget.Label) {
 	resetLockTimer()
@@ -593,6 +675,7 @@ func showEditEntryWindow(a fyne.App, v *vault.Vault, dek []byte, index int, refr
 	w.SetOnClosed(func() { removeWindowFromSlice(w) })
 	w.SetFixedSize(true)
 	w.Resize(fyne.NewSize(450, 550))
+	w.CenterOnScreen() // <-- Centers the window
 
 	w.SetCloseIntercept(func() { removeWindowFromSlice(w); w.Close() })
 
@@ -689,12 +772,13 @@ func showEditEntryWindow(a fyne.App, v *vault.Vault, dek []byte, index int, refr
 }
 
 
-// ------------------- VAULT WINDOW -------------------
+	// ------------------- VAULT WINDOW -------------------
 
 func showVaultWindow(a fyne.App, v *vault.Vault, dek []byte) {
 	w := a.NewWindow("Crypto Vault")
 	w.SetFixedSize(true)
-	w.Resize(fyne.NewSize(750, 750))
+	w.Resize(fyne.NewSize(550, 500))
+	w.CenterOnScreen() 
 
 	currentVaultWindow = w
 	openVaultWindows = append(openVaultWindows, w)
@@ -726,11 +810,23 @@ func showVaultWindow(a fyne.App, v *vault.Vault, dek []byte) {
 		query = strings.ToLower(query)
 		filteredEntries = nil
 		for i := range v.Entries {
+			// Decrypt and normalize the fields we want to search in
 			serviceStr := strings.ToLower(decryptEntry(dek, v.Entries[i].Service))
-			if query == "" || strings.Contains(serviceStr, query) {
+			notesStr := strings.ToLower(decryptEntry(dek, v.Entries[i].Notes))
+            
+			// Check if the query is empty or matches the service or notes
+			if query == "" || strings.Contains(serviceStr, query) || strings.Contains(notesStr, query) {
 				filteredEntries = append(filteredEntries, v.Entries[i])
 			}
 		}
+        
+		// ⭐️ ALPHABETICAL SORTING 
+		sort.Slice(filteredEntries, func(i, j int) bool {
+			serviceA := decryptEntry(dek, filteredEntries[i].Service)
+			serviceB := decryptEntry(dek, filteredEntries[j].Service)
+			return strings.ToLower(serviceA) < strings.ToLower(serviceB)
+		})
+        
 		if entriesList != nil {
 			entriesList.Refresh()
 			selectedIndex = -1
@@ -738,41 +834,41 @@ func showVaultWindow(a fyne.App, v *vault.Vault, dek []byte) {
 	}
 	filterEntries("")
 
-	// ⭐️ FIX: Use the custom TappableLabel for fast, left-aligned selection.
 	entriesList = widget.NewList(
 		func() int { return len(filteredEntries) },
 		func() fyne.CanvasObject { 
-			// Use the custom TappableLabel as the item template
-			return NewTappableLabel("", func() {})
+			tappableText := NewTappableText("", func() {}, theme.TextSize()) 
+			
+			// ⭐️ WRAPPED IN PADDING TO INCREASE ROW HEIGHT ⭐️
+			return container.NewPadded(tappableText)
 		},
 		func(i int, o fyne.CanvasObject) {
-			tappableLabel := o.(*TappableLabel)
+			// ⭐️ ACCESS INNER OBJECT FROM PADDED CONTAINER ⭐️
+			paddedContainer := o.(*fyne.Container)
+			tappableText := paddedContainer.Objects[0].(*TappableText) 
 			
 			// Set the left-aligned service name
-			tappableLabel.SetText(decryptEntry(dek, filteredEntries[i].Service))
+			tappableText.SetText(decryptEntry(dek, filteredEntries[i].Service))
 			
 			// Set the Tapped action to implement the toggle logic
-			tappableLabel.OnTapped = func() {
+			tappableText.OnTapped = func() {
 				resetLockTimer()
 				
 				if selectedIndex == i {
-					// If already selected, explicitly unselect it
 					entriesList.Unselect(i)
 					status.SetText("Entry deselected.")
 				} else {
-					// If not selected, select it
 					entriesList.Select(i)
 				}
 			}
 
-			// Manually change the background to reflect selection state
-			// This is faster than re-rendering a Button widget
+			// Manually change the style to reflect selection state
 			if selectedIndex == i {
-				tappableLabel.Label.TextStyle.Bold = true
+				tappableText.SetBold(true)
 			} else {
-				tappableLabel.Label.TextStyle.Bold = false
+				tappableText.SetBold(false)
 			}
-			tappableLabel.Refresh()
+			tappableText.Refresh()
 		},
 	)
     
@@ -784,7 +880,7 @@ func showVaultWindow(a fyne.App, v *vault.Vault, dek []byte) {
 		entriesList.Refresh() // Force refresh to update the visual state of the selected item
 	}
     
-    // Standard unselection handler (fires when unselect is called)
+	// Standard unselection handler (fires when unselect is called)
 	entriesList.OnUnselected = func(id widget.ListItemID) {
 		resetLockTimer()
 		if selectedIndex == int(id) {
@@ -822,6 +918,7 @@ func showVaultWindow(a fyne.App, v *vault.Vault, dek []byte) {
 		win.SetOnClosed(func() { removeWindowFromSlice(win) })
 		win.SetFixedSize(true)
 		win.Resize(fyne.NewSize(500, 350))
+		win.CenterOnScreen() // <-- Centers the view window
 
 		// Password Row
 		passwordEntry := widget.NewEntry()
@@ -956,3 +1053,4 @@ func showVaultWindow(a fyne.App, v *vault.Vault, dek []byte) {
 	w.SetContent(content)
 	w.Show()
 }
+	
